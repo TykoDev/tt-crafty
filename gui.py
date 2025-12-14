@@ -81,8 +81,13 @@ class MainWindow(tk.Tk):
         # Map
         ttk.Label(match_frame, text="Map:").grid(row=2, column=0, sticky="w")
         self.map_var = tk.StringVar(value="(Random)")
-        # Ideally we'd scan the maps folder, but for now allow typing or random
-        ttk.Entry(match_frame, textvariable=self.map_var, width=30).grid(row=2, column=1, sticky="w", padx=5)
+        self.map_combo = ttk.Combobox(match_frame, textvariable=self.map_var, width=28)
+        self.map_combo.grid(row=2, column=1, sticky="w", padx=5)
+
+        ttk.Button(match_frame, text="↻", width=3, command=self.refresh_maps).grid(row=2, column=2, padx=0)
+
+        # Scan maps immediately
+        self.refresh_maps()
 
         # === Launch ===
         btn_frame = ttk.Frame(main_frame, padding="20")
@@ -98,6 +103,73 @@ class MainWindow(tk.Tk):
         path = filedialog.askdirectory(initialdir=self.sc2_path_var.get(), title="Select StarCraft II Directory")
         if path:
             self.sc2_path_var.set(path)
+            self.refresh_maps()
+
+    def refresh_maps(self):
+        maps = ["(Random)"]
+
+        # 1. SC2 Maps
+        sc2_path = self.sc2_path_var.get()
+        sc2_maps_dir = os.path.join(sc2_path, "Maps")
+        if os.path.exists(sc2_maps_dir):
+            for root, dirs, files in os.walk(sc2_maps_dir):
+                for f in files:
+                    if f.endswith(".SC2Map"):
+                        maps.append(f.replace(".SC2Map", ""))
+
+        # 2. Local Maps (Project/maps)
+        local_maps_dir = os.path.join(os.getcwd(), "maps")
+        if os.path.exists(local_maps_dir):
+             for root, dirs, files in os.walk(local_maps_dir):
+                for f in files:
+                    if f.endswith(".SC2Map"):
+                        name = f.replace(".SC2Map", "")
+                        if name not in maps:
+                            maps.append(name)
+
+        # Unique and Sort
+        maps = sorted(list(set(maps)))
+        # Move (Random) to top
+        if "(Random)" in maps:
+            maps.remove("(Random)")
+            maps.insert(0, "(Random)")
+
+        if hasattr(self, 'map_combo'):
+            self.map_combo['values'] = maps
+
+    def ensure_map_installed(self, map_name):
+        sc2_path = self.sc2_path_var.get()
+        sc2_maps_dir = os.path.join(sc2_path, "Maps")
+
+        # Check if exists in SC2 Maps
+        found = False
+        if os.path.exists(sc2_maps_dir):
+            for root, dirs, files in os.walk(sc2_maps_dir):
+                if f"{map_name}.SC2Map" in files:
+                    found = True
+                    break
+
+        if found: return
+
+        # Not found, check local
+        local_maps_dir = os.path.join(os.getcwd(), "maps")
+        local_map_path = None
+        if os.path.exists(local_maps_dir):
+            for root, dirs, files in os.walk(local_maps_dir):
+                if f"{map_name}.SC2Map" in files:
+                    local_map_path = os.path.join(root, f"{map_name}.SC2Map")
+                    break
+
+        if local_map_path:
+             # Copy it
+             try:
+                 dest = os.path.join(sc2_maps_dir, f"{map_name}.SC2Map")
+                 if not os.path.exists(sc2_maps_dir):
+                     os.makedirs(sc2_maps_dir)
+                 shutil.copy(local_map_path, dest)
+                 print(f"Installed map {map_name} to {dest}")
+             except Exception as e:
+                 print(f"Failed to install map: {e}")
 
     def import_map(self):
         file_path = filedialog.askopenfilename(filetypes=[("SC2 Maps", "*.SC2Map")])
@@ -156,8 +228,10 @@ class MainWindow(tk.Tk):
             "--sc2-path", self.sc2_path_var.get()
         ])
 
-        if self.map_var.get() and self.map_var.get() != "(Random)":
-            args.extend(["--map", self.map_var.get()])
+        map_name = self.map_var.get()
+        if map_name and map_name != "(Random)":
+            self.ensure_map_installed(map_name)
+            args.extend(["--map", map_name])
 
         # Disable button
         self.launch_btn.configure(state="disabled")
