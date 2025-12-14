@@ -5,7 +5,7 @@ import shutil
 import zipfile
 from typing import Optional
 
-from bot import CompetitiveBot as bot
+from config import BOT_NAME, BOT_RACE
 
 # Ignore the annoying resource warning from importing sc2 when an SC2 instance isn't running.
 import warnings
@@ -45,7 +45,7 @@ ladderbots_json_template = """{
 
 
 def generate_ladderbots_json() -> str:
-    return ladderbots_json_template.replace("[NAME]", bot.NAME).replace("[RACE]", str(bot.RACE).split(".")[1])
+    return ladderbots_json_template.replace("[NAME]", BOT_NAME).replace("[RACE]", BOT_RACE)
 
 
 def zipdir(path: str, ziph: zipfile.ZipFile, remove_path: Optional[str] = None):

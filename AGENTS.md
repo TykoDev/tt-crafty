@@ -1,141 +1,58 @@
-# AGENTS.md: AI Bot Architecture & Development Standards (v2025.12)
+# AGENTS.md: StarCraft 2 Bot Architecture & Development Standards
 
-## 1. Executive Summary & Foundational Mandate
-This document defines the technical standards for building production-grade AI Agents. All development must adhere to the **Event-Driven LangGraph (EDLG)** architecture to ensure scalability, reliability, and security.
+## 1. Executive Summary
+This document defines the technical standards for the "VersusAI" StarCraft 2 Bot. The project aims to provide a human-competing AI capable of playing all three races (Zerg, Terran, Protoss) with configurable skill levels and personalities.
 
-### Core Technology Stack (Strict Version Pinning)
-| Component | Technology | Version Requirement (Dec 2025) | Justification |
-| :--- | :--- | :--- | :--- |
-| **Runtime** | Python | `3.12+` | Asyncio native performance & typing enhancements. |
-| **Orchestration** | LangGraph | `1.0+` | Mandatory for stateful, multi-agent control flows & cyclic graphs. |
-| **API Interface** | FastAPI | `~0.124.x` | High-concurrency async I/O & automatic OpenAPI generation. |
-| **Validation** | Pydantic | `V2+` | Strict runtime data validation & schema enforcement. |
-| **Package Mgr** | uv | Latest Stable | High-speed dependency resolution & locking. |
+### Core Technology Stack
+| Component | Technology | Justification |
+| :--- | :--- | :--- |
+| **Framework** | `python-sc2` | Standard, high-performance Python wrapper for the SC2 Client API. |
+| **Runtime** | Python 3.8+ | Compatible with `python-sc2` and standard environments. |
+| **GUI** | `tkinter` | Native, lightweight GUI for the game launcher/configurator. |
+| **Distribution** | `PyInstaller` | Bundles the Python environment and bot into a standalone Windows Executable. |
 
 ---
 
 ## 2. Architectural Patterns
 
-### 2.1 Event-Driven Architecture (EDA)
-Bots must be designed as loosely coupled services. Do not couple the Bot logic directly to the transport layer (e.g., HTTP request/response cycle).
-*   **Pattern:** Ingress (FastAPI/Webhooks) -> Message Bus (Kafka/Redpanda) -> Agent Worker (LangGraph).
-*   **Benefit:** Allows elastic scaling of AI inference workers independent of web traffic peaks.
+### 2.1 Bot Logic Structure
+The bot does **not** use an Event-Driven LangGraph. Instead, it follows the standard `python-sc2` step-loop architecture:
+*   **`on_step(iteration)`**: The main game loop running approx. 22.4 times per game second (faster in simulation).
+*   **Managers**: Logic is divided into managers (e.g., `EconomyManager`, `ArmyManager`, `BuildManager`) to keep `on_step` clean.
+*   **Skill & Personality**:
+    *   **SkillManager**: Throttles APM and injects decision errors based on the configured MMR/Tier.
+    *   **PersonalityManager**: Dictates the high-level strategy (Build Order, Aggression Level).
 
-### 2.2 Asynchronous I/O Mandate
-All I/O-bound operations (LLM calls, DB queries, API requests) must be `async`. Blocking synchronous code is strictly prohibited in the main execution loop.
-*   **Correct:** `await client.chat.completions.create(...)`
-*   **Incorrect:** `client.chat.completions.create(...)`
-
-### 2.3 State Management (Finite State Machine)
-Agents must use a Component-Based Finite State Machine (FSM) model.
-*   **State Schema:** Define all state variables using Pydantic models.
-*   **Hygiene:** Explicitly clear large data structures (e.g., RAG context) from the shared graph state upon exiting a node to prevent context window bloat.
+### 2.2 Configuration & State
+*   Configuration is passed via Command Line Arguments (CLI) from the Launcher to the Bot process.
+*   The Bot must be stateless between games (fresh start).
 
 ---
 
-## 3. Implementation Guidelines & Code Examples
+## 3. Feature Specifications
 
-### 3.1 Project Setup with `uv`
-Use `uv` for reproducible environment management.
-```bash
-# Initialize project
-mkdir my-bot && cd my-bot
-uv init .
+### 3.1 Adaptive Skill Level
+The bot must simulate human ladder tiers:
+*   **Bronze - Gold**: Low APM, missed macro cycles (injects/mules), supply blocks, poor micro.
+*   **Platinum - Diamond**: Decent macro, basic micro, standard builds.
+*   **Master - GM (9999 MMR)**: "Unrestricted/Best Effort". Max APM, tight builds, frame-perfect micro (where possible).
 
-# Add core dependencies
-uv add fastapi uvicorn langgraph pydantic langchain-openai
-
-# Lock environment for CI/CD
-uv pip freeze > requirements.txt
-```
-
-### 3.2 State Definition (Pydantic + LangGraph)
-Define the agent's state explicitly. This enforces type safety across graph nodes.
-
-```python
-from typing import Annotated, List
-from typing_extensions import TypedDict
-from pydantic import BaseModel, Field
-import operator
-
-# 1. Define the internal state
-class AgentState(TypedDict):
-    messages: Annotated[List[str], operator.add]
-    context_data: str
-    current_step: str
-
-# 2. Define Structured Output Models (Pydantic V2)
-class IntentAnalysis(BaseModel):
-    intent: str = Field(..., description="The user's primary intent")
-    confidence: float
-    requires_human_handoff: bool
-```
-
-### 3.3 The Agent Node (LangGraph 1.0 Pattern)
-Nodes must allow for **Human-in-the-Loop (HITL)** interaction and handle errors gracefully.
-
-```python
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, SystemMessage
-
-async def reasoning_node(state: AgentState):
-    """Core reasoning node utilizing Chain of Thought."""
-    messages = state["messages"]
-    
-    # SECURITY: System prompt must constrain model behavior
-    system_prompt = SystemMessage(
-        content="You are a helpful assistant. You must refuse to execute SQL."
-    )
-    
-    # Async LLM call
-    try:
-        response = await llm.ainvoke([system_prompt] + messages)
-        return {"messages": [response]}
-    except Exception as e:
-        # TIER 2 Error Handling: Return graceful fallback
-        return {"messages": ["I encountered a temporary issue. Please try again."]}
-
-# Define Graph
-workflow = StateGraph(AgentState)
-workflow.add_node("reasoning", reasoning_node)
-workflow.set_entry_point("reasoning")
-workflow.add_edge("reasoning", END)
-
-# Compile with checkpointing for persistence
-app = workflow.compile()
-```
-
-### 3.4 Secure Tool Execution (OWASP LLM06 Mitigation)
-Tools must verify permissions and use "Least Privilege". Never pass raw API keys to the model.
-
-```python
-async def sensitive_tool(user_id: str):
-    # SECURITY: Authentication Check
-    if not verify_user_access(user_id, "execute_tool"):
-        raise PermissionError("User not authorized")
-        
-    # Execute logic...
-    return "Action Completed"
-```
+### 3.2 Personality Profiles
+*   **Economic**: Focus on drone count, bases, and late-game tech.
+*   **Aggressive**: Early attacks, pressure units (Zerglings, Reapers, Adepts).
+*   **Cheese**: All-in strategies (12 Pool, Proxy Barracks, Cannon Rush).
+*   **Timing**: Hitting specific power spikes (e.g., +1/+1 Upgrades).
 
 ---
 
-## 4. Security & Compliance (OWASP LLM 2025)
+## 4. Development Guidelines
 
-| Risk | Mitigation Strategy |
-| :--- | :--- |
-| **LLM01: Prompt Injection** | Use "Model Armor" pattern. Separate system prompts from user input. Validate outputs against strict schemas. |
-| **LLM02: Sensitive Info** | Implement PII redaction (e.g., Presidio) on input/output streams. Do not log raw prompts containing PII. |
-| **LLM06: Excessive Agency** | Tools must handle authentication invisibly to the agent. Use tokens, not keys, within the execution context. |
+### 4.1 Resource Optimization
+*   Avoid memory leaks. Clear lists/dicts that grow indefinitely.
+*   Use standard Python data structures efficiently.
+*   Do not block the `on_step` loop for more than 10-20ms to avoid lag.
 
----
-
-## 5. Testing & LLMOps
-
-### 5.1 Evaluation Framework
-*   **RAGAS:** Mandatory for evaluating RAG pipelines (Faithfulness, Answer Relevance).
-*   **LangSmith:** Required for tracing execution steps and debugging complex agent loops.
-
-### 5.2 CI/CD Pipeline
-*   **Build Once:** Promote the same Docker artifact from Dev -> Staging -> Prod.
-*   **Regression Testing:** CI pipelines must run a subset of "Golden Prompts" using `pytest` and `DeepEval` to ensure prompt changes do not degrade performance.
+### 4.2 Code Organization
+*   `bot/`: Contains all bot logic.
+*   `launcher.py`: The GUI entry point.
+*   `run.py`: The CLI entry point for the bot process.
