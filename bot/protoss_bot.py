@@ -3,6 +3,7 @@ from sc2.data import Result, Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
+from sc2.ids.buff_id import BuffId
 from .core import BotSettings, SkillManager, PersonalityManager, BotPersonality
 
 class ProtossBot(BotAI):
@@ -26,6 +27,9 @@ class ProtossBot(BotAI):
         await self.manage_supply()
         await self.manage_economy()
         await self.manage_buildings()
+        await self.manage_tech()
+        await self.manage_upgrades()
+        await self.manage_chrono()
         await self.manage_army()
 
     async def manage_supply(self):
@@ -82,10 +86,10 @@ class ProtossBot(BotAI):
              if self.structures(UnitTypeId.FORGE).ready.exists:
                   if self.can_afford(UnitTypeId.PHOTONCANNON) and self.structures(UnitTypeId.PHOTONCANNON).amount < 4:
                         await self.build(UnitTypeId.PHOTONCANNON, near=pylons.closest_to(hq))
-             return # Skip other buildings if hardcore rushing/turtling
+             return
 
         # Gateways
-        desired_gateways = self.townhalls.amount * 2
+        desired_gateways = self.townhalls.amount * 2 + 1
         if self.opener == "4_GATE":
             desired_gateways = 4
 
@@ -98,8 +102,56 @@ class ProtossBot(BotAI):
              if self.can_afford(UnitTypeId.CYBERNETICSCORE):
                  await self.build(UnitTypeId.CYBERNETICSCORE, near=pylons.closest_to(hq))
 
+    async def manage_tech(self):
+        if not self.townhalls.exists: return
+        hq = self.townhalls.first
+        pylons = self.structures(UnitTypeId.PYLON).ready
+        if not pylons.exists: return
+
+        if self.structures(UnitTypeId.CYBERNETICSCORE).ready.exists:
+             # Robotics Facility
+             if not self.structures(UnitTypeId.ROBOTICSFACILITY).exists:
+                  if self.can_afford(UnitTypeId.ROBOTICSFACILITY):
+                       await self.build(UnitTypeId.ROBOTICSFACILITY, near=pylons.closest_to(hq))
+
+             # Twilight Council (if we have gas)
+             if self.vespene >= 100 and not self.structures(UnitTypeId.TWILIGHTCOUNCIL).exists:
+                  if self.can_afford(UnitTypeId.TWILIGHTCOUNCIL):
+                       await self.build(UnitTypeId.TWILIGHTCOUNCIL, near=pylons.closest_to(hq))
+
+    async def manage_upgrades(self):
+        # Warpgate
+        cc = self.structures(UnitTypeId.CYBERNETICSCORE).ready.first
+        if cc:
+             if self.can_afford(UpgradeId.WARPGATERESEARCH) and not self.already_pending_upgrade(UpgradeId.WARPGATERESEARCH):
+                 cc.research(UpgradeId.WARPGATERESEARCH)
+
+        # Blink
+        twilight = self.structures(UnitTypeId.TWILIGHTCOUNCIL).ready.first
+        if twilight:
+             if self.can_afford(UpgradeId.BLINKTECH) and not self.already_pending_upgrade(UpgradeId.BLINKTECH):
+                  twilight.research(UpgradeId.BLINKTECH)
+
+    async def manage_chrono(self):
+         for nexus in self.townhalls.ready:
+             if nexus.energy >= 50:
+                 target = None
+                 # 1. Warpgate or Blink
+                 for structure_type in [UnitTypeId.CYBERNETICSCORE, UnitTypeId.TWILIGHTCOUNCIL]:
+                      structure = self.structures(structure_type).ready.first
+                      if structure and not structure.is_idle and not structure.has_buff(BuffId.CHRONOBOOSTENERGYCOST):
+                           target = structure
+                           break
+
+                 # 2. Probes
+                 if not target and self.supply_workers < 70 and not nexus.is_idle and not nexus.has_buff(BuffId.CHRONOBOOSTENERGYCOST):
+                      target = nexus
+
+                 if target:
+                     nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, target)
+
     async def manage_army(self):
-        # Train Units
+        # Train Units from Gateways
         for gate in self.structures(UnitTypeId.GATEWAY).ready:
             if gate.is_idle:
                 if self.structures(UnitTypeId.CYBERNETICSCORE).ready.exists and self.can_afford(UnitTypeId.STALKER):
@@ -107,13 +159,25 @@ class ProtossBot(BotAI):
                 elif self.can_afford(UnitTypeId.ZEALOT):
                      gate.train(UnitTypeId.ZEALOT)
 
+        # Robo Units
+        for robo in self.structures(UnitTypeId.ROBOTICSFACILITY).ready:
+             if robo.is_idle:
+                  if self.units(UnitTypeId.OBSERVER).amount < 1 and self.can_afford(UnitTypeId.OBSERVER):
+                       robo.train(UnitTypeId.OBSERVER)
+                  elif self.can_afford(UnitTypeId.IMMORTAL):
+                       robo.train(UnitTypeId.IMMORTAL)
+
         # Attack
-        army = self.units.of_type([UnitTypeId.STALKER, UnitTypeId.ZEALOT])
-        threshold = 15
-        if self.opener == "4_GATE": threshold = 8
+        army = self.units.of_type([UnitTypeId.STALKER, UnitTypeId.ZEALOT, UnitTypeId.IMMORTAL])
+        threshold = 20
+        if self.opener == "4_GATE": threshold = 10
 
         if army.amount > threshold:
              if self.enemy_start_locations:
                 target = self.enemy_start_locations[0]
                 for unit in army:
                     unit.attack(target)
+
+                # Observers follow
+                for obs in self.units(UnitTypeId.OBSERVER):
+                    obs.move(army.center)
