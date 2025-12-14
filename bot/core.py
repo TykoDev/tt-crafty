@@ -2,6 +2,7 @@ from enum import Enum
 from dataclasses import dataclass
 import random
 from sc2.bot_ai import BotAI
+from sc2.data import Race
 
 class BotPersonality(Enum):
     STANDARD = "Standard"
@@ -61,12 +62,33 @@ class PersonalityManager:
     def __init__(self, personality: BotPersonality):
         self.personality = personality
 
-    def get_opener(self):
-        if self.personality == BotPersonality.CHEESE:
-            return "12_POOL"
-        elif self.personality == BotPersonality.AGGRESSIVE:
-            return "POOL_FIRST"
-        elif self.personality == BotPersonality.ECONOMIC:
-            return "HATCH_FIRST"
-        else:
-            return "HATCH_FIRST" # Standard
+    def get_opener(self, race: Race = Race.Zerg):
+        if race == Race.Zerg:
+            if self.personality == BotPersonality.CHEESE:
+                return "12_POOL"
+            elif self.personality == BotPersonality.AGGRESSIVE:
+                return "POOL_FIRST"
+            elif self.personality == BotPersonality.ECONOMIC:
+                return "HATCH_FIRST"
+            else:
+                return "HATCH_FIRST" # Standard
+
+        elif race == Race.Terran:
+            if self.personality == BotPersonality.CHEESE:
+                return "PROXY_RAX"
+            elif self.personality == BotPersonality.AGGRESSIVE:
+                return "3_RAX"
+            elif self.personality == BotPersonality.ECONOMIC:
+                return "CC_FIRST"
+            else:
+                return "RAX_EXPAND" # Standard
+
+        elif race == Race.Protoss:
+            if self.personality == BotPersonality.CHEESE:
+                return "CANNON_RUSH"
+            elif self.personality == BotPersonality.AGGRESSIVE:
+                return "4_GATE"
+            elif self.personality == BotPersonality.ECONOMIC:
+                return "NEXUS_FIRST"
+            else:
+                return "GATE_EXPAND" # Standard
