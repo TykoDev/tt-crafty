@@ -3,6 +3,7 @@ import asyncio
 import logging
 import aiohttp
 import os
+import sys
 import sc2
 from sc2.main import run_game
 from sc2.data import Race, Difficulty
@@ -11,14 +12,10 @@ from sc2.player import Bot, Computer
 from sc2.protocol import ConnectionAlreadyClosed
 import random
 
-from bot import CompetitiveBot
+from bot import ZergBot, TerranBot, ProtossBot, BotSettings, BotPersonality
 from config import BOT_NAME, BOT_RACE, MAP_POOL, MAP_PATH, OPPONENT_RACE, OPPONENT_DIFFICULTY, REALTIME
-from sc2.data import Race, Difficulty
-
 
 # Run ladder game
-# This lets python-sc2 connect to a ladder game.
-# Based on: https://github.com/Dentosal/python-sc2/blob/master/examples/run_external.py
 def run_ladder_game(args, bot):
     if args.LadderServer == None:
         host = "127.0.0.1"
@@ -39,26 +36,11 @@ def run_ladder_game(args, bot):
     # Join ladder game
     g = join_ladder_game(host=host, port=host_port, players=[bot], realtime=args.Realtime, portconfig=portconfig)
 
-    # Ensure replay directory exists
-    if REPLAY_SAVE_PATH and not os.path.exists(REPLAY_SAVE_PATH):
-        os.makedirs(REPLAY_SAVE_PATH, exist_ok=True)
-    
     # Run the game
     result = asyncio.get_event_loop().run_until_complete(g)
-    
-    # Save replay if we have a path and a result
-    if result and REPLAY_SAVE_PATH:
-        replay_path = os.path.join(REPLAY_SAVE_PATH, f"{BOT_NAME}_vs_{args.OpponentId}.SC2Replay")
-        try:
-            result.save_replay(replay_path)
-            print(f"Replay saved to: {replay_path}")
-        except Exception as e:
-            print(f"Failed to save replay: {e}")
-    
     return result, args.OpponentId
 
 
-# Modified version of sc2.main._join_game to allow custom host and port, and to not spawn an additional sc2process (thanks to alkurbatov for fix)
 async def join_ladder_game(
         host, port, players, realtime, portconfig, save_replay_as=None, step_time_limit=None, game_time_limit=None
 ):
@@ -69,8 +51,6 @@ async def join_ladder_game(
         result = await sc2.main._play_game(players[0], client, realtime, portconfig, step_time_limit, game_time_limit)
         if save_replay_as is not None:
             await client.save_replay(save_replay_as)
-        # await client.leave()
-        # await client.quit()
     except ConnectionAlreadyClosed:
         logging.error(f"Connection was closed before the game ended")
         return None
@@ -81,7 +61,6 @@ async def join_ladder_game(
 
 
 def parse_arguments():
-    # Load command line arguments
     parser = argparse.ArgumentParser()
 
     # Ladder play arguments
@@ -90,28 +69,26 @@ def parse_arguments():
     parser.add_argument("--LadderServer", type=str, help="Ladder server.")
 
     # Bot settings
-    parser.add_argument("--bot-name", type=str, default=BOT_NAME,
-                       help=f"Name of your bot. Default: {BOT_NAME}")
-    parser.add_argument("--bot-race", type=str, default=BOT_RACE,
-                       help=f"Bot race (Terran, Zerg, Protoss, Random). Default: {BOT_RACE}")
+    parser.add_argument("--bot-name", type=str, default=BOT_NAME, help="Name of your bot.")
+    parser.add_argument("--bot-race", type=str, default=BOT_RACE, help="Bot race (Terran, Zerg, Protoss, Random).")
+    parser.add_argument("--mmr", type=int, default=3000, help="Bot MMR (Skill Level).")
+    parser.add_argument("--personality", type=str, default="Standard", help="Bot Personality (Standard, Economic, Aggressive, Cheese).")
     
     # Game settings
-    parser.add_argument("--map", type=str, default=None,
-                       help=f"Map to play on. If not specified, a random map will be selected from: {', '.join(MAP_POOL)}")
-    parser.add_argument("--opponent-race", type=str, default=OPPONENT_RACE,
-                       help=f"Computer race (Terran, Zerg, Protoss, Random). Default: {OPPONENT_RACE}")
-    parser.add_argument("--difficulty", type=str, default=OPPONENT_DIFFICULTY,
-                       help=f"Computer difficulty (VeryEasy to VeryHard). Default: {OPPONENT_DIFFICULTY}")
-    parser.add_argument("--realtime", action='store_true', default=REALTIME,
-                       help=f"Play in realtime. Default: {REALTIME}")
-    parser.add_argument("--sc2-version", type=str, help="Starcraft 2 game version (optional)")
+    parser.add_argument("--map", type=str, default=None, help="Map to play on.")
+    parser.add_argument("--opponent-race", type=str, default=OPPONENT_RACE, help="Computer race.")
+    parser.add_argument("--difficulty", type=str, default=OPPONENT_DIFFICULTY, help="Computer difficulty.")
+    parser.add_argument("--realtime", action='store_true', default=REALTIME, help="Play in realtime.")
+    parser.add_argument("--sc2-path", type=str, help="Path to StarCraft II installation.")
+    parser.add_argument("--sc2-version", type=str, help="Starcraft 2 game version.")
 
     args, unknown_args = parser.parse_known_args()
 
-    for unknown_arg in unknown_args:
-        print(f"Unknown argument: {unknown_arg}")
+    # Handle SC2 Path
+    if args.sc2_path and os.path.exists(args.sc2_path):
+        os.environ["SC2PATH"] = args.sc2_path
 
-    # Set default opponent ID if not provided
+    # Set default opponent ID
     if not hasattr(args, 'OpponentId') or not args.OpponentId:
         args.OpponentId = f"{args.opponent_race}_{args.difficulty}"
 
@@ -120,85 +97,83 @@ def parse_arguments():
 
 def load_bot(args):
     """Initialize and configure the bot."""
-    # Create bot instance
-    bot = CompetitiveBot()
+    # Settings
+    try:
+        personality = BotPersonality(args.personality)
+    except ValueError:
+        print(f"Invalid personality: {args.personality}. Using Standard.")
+        personality = BotPersonality.STANDARD
 
-    # Convert string race to Race enum
+    settings = BotSettings(mmr=args.mmr, personality=personality)
+
+    # Race
     try:
         bot_race = Race[args.bot_race.capitalize()]
     except KeyError:
-        print(f"Invalid bot race: {args.bot_race}. Using Terran.")
-        bot_race = Race.Terran
+        print(f"Invalid bot race: {args.bot_race}. Using Zerg.")
+        bot_race = Race.Zerg
 
-    # Return configured bot
-    return Bot(bot_race, bot)
+    # Select Bot Class
+    if bot_race == Race.Zerg:
+        bot_logic = ZergBot(settings)
+    elif bot_race == Race.Terran:
+        bot_logic = TerranBot(settings)
+    elif bot_race == Race.Protoss:
+        bot_logic = ProtossBot(settings)
+    else:
+        bot_logic = ZergBot(settings) # Fallback for Random?
 
-
-def run():
-    """Legacy run function - kept for compatibility."""
-    print("Warning: Using legacy run() function. Consider updating your code.")
-    main()
+    return Bot(bot_race, bot_logic)
 
 
 def main():
-    """Main function to run the bot."""
-    # Parse command line arguments
     args = parse_arguments()
     
-    # Simple console logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     
-    # Get bot name and race from args (with fallback to config)
     bot_name = getattr(args, 'bot_name', BOT_NAME)
     bot_race = getattr(args, 'bot_race', BOT_RACE)
     
+    # Check if running in Ladder mode (GamePort provided)
+    if args.GamePort:
+        print(f"Starting Ladder Game for {bot_name}...")
+        bot = load_bot(args)
+        run_ladder_game(args, bot)
+        return 0
+
+    # Local Play
     print(f"===== {bot_name} ({bot_race}) =====")
+    print(f"MMR: {args.mmr}, Personality: {args.personality}")
     print(f"Available maps: {', '.join(MAP_POOL)}")
-    print(f"Opponent: {args.opponent_race} {args.difficulty}")
-    print(f"Realtime: {'Yes' if args.realtime else 'No'}")
     
     try:
-        # Load and run the bot
         bot = load_bot(args)
 
-        # Convert string to Race and Difficulty enums for opponent
+        # Opponent Setup
         try:
             opponent_race = Race[args.opponent_race.capitalize()]
         except KeyError:
-            print(f"Invalid opponent race: {args.opponent_race}. Using Terran.")
-            opponent_race = Race.Terran
+            opponent_race = Race.Random
+
         try:
             difficulty = Difficulty[args.difficulty]
         except KeyError:
-            print(f"Invalid difficulty: {args.difficulty}. Using VeryHard.")
             difficulty = Difficulty.VeryHard
 
-        # Select a random map if none specified
+        # Map Setup
         map_name = args.map if args.map else random.choice(MAP_POOL)
 
-        # Get map from specified path or default SC2 maps
-        if MAP_PATH and os.path.exists(MAP_PATH):
-            try:
-                print(f"Loading map from custom path: {MAP_PATH}")
-                # Use the map_dir parameter directly with the full Maps path
-                map_obj = sc2.maps.get(map_name, map_dir=MAP_PATH)
-            except Exception as e:
-                print(f"Error loading custom map: {e}")
-                print("Falling back to default SC2 maps...")
-                map_obj = sc2.maps.get(map_name)
-        else:
-            map_obj = sc2.maps.get(map_name)
+        # Resolve Map Path
+        # Logic: If map arg is a full path, use it? Or assume it's a name in MAP_PATH?
+        # sc2.maps.get() looks in MAP_DIR.
+        # If MAP_PATH is set in config, use it.
 
-        # Start a local game
         print(f"\nStarting game on {map_name}...")
         run_game(
-            map_obj,
+            sc2.maps.get(map_name),
             [bot, Computer(opponent_race, difficulty)],
             realtime=args.realtime,
-            sc2_version=args.sc2_version if hasattr(args, 'sc2_version') else None
+            sc2_version=args.sc2_version
         )
     except KeyboardInterrupt:
         print("\nGame stopped by user")
@@ -211,5 +186,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())
